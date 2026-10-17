@@ -2,15 +2,17 @@
 装备知识问答引擎 —— 规则模板 + LLM Text2Cypher 兜底
 依赖: neo4j, requests (ollama)
 """
-import json, os, re, time, requests
+import json, re, time, requests
 from neo4j import GraphDatabase
 
-# ===== 连接配置 (from env) =====
-NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
-NEO4J_PWD = os.environ.get("NEO4J_PWD", "eqkg2026")
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:7b")
+from config import settings, neo4j_auth
+from ontology import EntityType, RelationType, ALLOWED_LABELS, ALLOWED_RELATIONS
+
+# ===== 连接配置 (统一从 config.py 读取) =====
+NEO4J_URI = settings.neo4j.uri
+NEO4J_USER, NEO4J_PWD = neo4j_auth()
+OLLAMA_URL = settings.ollama.url
+LLM_MODEL = settings.ollama.model
 
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
 

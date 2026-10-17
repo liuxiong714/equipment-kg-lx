@@ -3,7 +3,7 @@
 启动: py -3.12 -u eqkg-poc/qa-flask-app.py
 访问: http://localhost:5000
 """
-import os, sys, json, time, uuid
+import os, sys, json, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -14,13 +14,16 @@ from qa_engine import ask, run_cypher, driver, NEO4J_URI, NEO4J_USER, NEO4J_PWD
 from eqkg_extractor import (
     read_pdf_from_bytes, detect_equipment_name, extract_from_text, merge_triples
 )
+from parsers import get_parser  # Phase 3: Parser 策略层
+from config import settings
+from persist import (            # Phase 5: SQLite 抽取主存
+    ingest_document, save_extract_run,
+    get_triples_for_doc, list_documents, delete_document,
+)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB 上限
-ALLOWED_EXT = {"pdf"}
-
-# 抽取结果暂存（内存 dict，生产环境应该用 Redis）
-PENDING_EXTRACTS = {}  # extract_id -> {equipment, triples, text_len, is_scanned, filename}
+app.config["MAX_CONTENT_LENGTH"] = settings.app.max_upload_mb * 1024 * 1024
+ALLOWED_EXT = set(settings.app.allowed_extensions)
 
 
 def _allowed(name: str) -> bool:
@@ -333,7 +336,7 @@ async function commitToNeo4j() {
   try {
     const r = await fetch('/api/commit', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({extract_id: pendingExtract.extract_id})
+      body: JSON.stringify({doc_id: pendingExtract.doc_id})
     });
     const data = await r.json();
     const box = document.getElementById('commitBox');
@@ -398,22 +401,33 @@ def api_overview():
 
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
-    """接收 PDF → 返回抽取预览"""
+    """接收文档 → Parser 解析 → 规则抽取 → 存 SQLite → 返回预览"""
     if "file" not in request.files:
         return jsonify({"error": "没有上传文件"}), 400
     f = request.files["file"]
     if not f.filename or not _allowed(f.filename):
-        return jsonify({"error": "只接受 .pdf 文件"}), 400
+        return jsonify({"error": f"只接受 {ALLOWED_EXT} 文件"}), 400
 
     data = f.read()
-    if len(data) > 50 * 1024 * 1024:
-        return jsonify({"error": "文件超过 50MB"}), 400
+    max_mb = settings.app.max_upload_mb
+    if len(data) > max_mb * 1024 * 1024:
+        return jsonify({"error": f"文件超过 {max_mb}MB"}), 400
 
     t0 = time.time()
-    try:
-        text = read_pdf_from_bytes(data, f.filename)
-    except Exception as e:
-        return jsonify({"error": f"PDF 解析失败: {e}"}), 400
+
+    # Phase 3: Parser 策略层
+    ext = "." + f.filename.rsplit(".", 1)[1].lower()
+    parser = get_parser(ext)
+    if parser:
+        text = parser.extract(data)
+        parser_method = parser.__class__.__name__.replace("Parser", "").lower()
+    else:
+        # fallback: PyMuPDF 硬编码
+        try:
+            text = read_pdf_from_bytes(data, f.filename)
+            parser_method = "pymupdf"
+        except Exception as e:
+            return jsonify({"error": f"文档解析失败: {e}"}), 400
 
     equipment = detect_equipment_name(text, f.filename)
     triples = extract_from_text(text, equipment)
@@ -421,43 +435,46 @@ def api_upload():
 
     is_scanned = len(text) < 50
 
-    # 存到内存
-    extract_id = uuid.uuid4().hex
-    PENDING_EXTRACTS[extract_id] = {
-        "equipment": equipment,
-        "triples": triples,
-        "text_len": len(text),
-        "is_scanned": is_scanned,
-        "filename": f.filename,
-        "created_at": time.time(),
-    }
+    # Phase 5: SQLite 持久化（替代内存暂存）
+    doc_id = ingest_document(
+        filename=f.filename,
+        text_len=len(text),
+        parser_method=parser_method,
+        is_scanned=is_scanned,
+    )
+    run_id = save_extract_run(
+        doc_id=doc_id,
+        triples=triples,
+        method="rule",
+        duration_s=elapsed,
+    )
 
     return jsonify({
-        "extract_id": extract_id,
+        "doc_id": doc_id,
+        "run_id": run_id,
         "equipment": equipment,
         "triples": triples,
         "text_len": len(text),
         "is_scanned": is_scanned,
         "elapsed": round(elapsed, 2),
         "filename": f.filename,
+        "parser_method": parser_method,
     })
 
 
 @app.route("/api/commit", methods=["POST"])
 def api_commit():
-    """把暂存的三元组 MERGE 进 Neo4j"""
+    """把 SQLite 里该文档的最新抽取 MERGE 进 Neo4j"""
     payload = request.get_json() or {}
-    extract_id = payload.get("extract_id")
-    if not extract_id or extract_id not in PENDING_EXTRACTS:
-        return jsonify({"error": "找不到暂存的抽取结果，请重新上传"}), 404
+    doc_id = payload.get("doc_id")
+    if not doc_id:
+        return jsonify({"error": "需要 doc_id"}), 400
 
-    pending = PENDING_EXTRACTS.pop(extract_id)
-    triples = pending["triples"]
+    triples = get_triples_for_doc(int(doc_id))
     if not triples:
-        return jsonify({"error": "没有可导入的三元组"}), 400
+        return jsonify({"error": f"doc_id={doc_id} 没有可导入的三元组"}), 400
 
     try:
-        # 确保 driver 活着
         try:
             driver.verify_connectivity()
         except Exception:
@@ -469,6 +486,20 @@ def api_commit():
         return jsonify({"error": f"Neo4j 写入失败: {e}"}), 500
 
     return jsonify(result)
+
+
+@app.route("/api/documents")
+def api_documents():
+    """列出已导入文档（Phase 5 新增）"""
+    return jsonify(list_documents())
+
+
+@app.route("/api/documents/<int:doc_id>", methods=["DELETE"])
+def api_documents_delete(doc_id):
+    """删除某文档 + 其抽取历史（dry_run 支持）"""
+    dry = request.args.get("dry_run", "0") in ("1", "true", "yes")
+    n = delete_document(doc_id, dry_run=dry)
+    return jsonify({"doc_id": doc_id, "dry_run": dry, "affected_rows": n})
 
 
 if __name__ == "__main__":

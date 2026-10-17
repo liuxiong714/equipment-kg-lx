@@ -26,5 +26,12 @@ Thumbs.db
 *.tmp
 *~
 
+# ===== SQLite 本地库 =====
+*.db
+*.db-*
+
 # ===== 装备数据 PDF (外部路径，不在仓库) =====
 # PDF 原始文档不入库，仓库只存代码
+
+# ===== 第三方克隆（嵌套 git repo） =====
+llm-graph-builder/
