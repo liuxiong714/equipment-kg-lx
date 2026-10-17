@@ -1,0 +1,30 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== Neo4j / Docker =====
+# Neo4j data 在 WSL2 Docker volume 里，不在本仓库
+
+# ===== 临时文件 =====
+*.log
+*.tmp
+*~
+
+# ===== 装备数据 PDF (外部路径，不在仓库) =====
+# PDF 原始文档不入库，仓库只存代码
