@@ -15,6 +15,7 @@ from eqkg_extractor import (
     read_pdf_from_bytes, detect_equipment_name, extract_from_text, merge_triples
 )
 from parsers import get_parser  # Phase 3: Parser 策略层
+from parsers.ocr_parser import smart_parse_pdf  # OCR fallback for 扫描件
 from config import settings
 from persist import (            # Phase 5: SQLite 抽取主存
     ingest_document, save_extract_run,
@@ -415,19 +416,20 @@ def api_upload():
 
     t0 = time.time()
 
-    # Phase 3: Parser 策略层
+    # Phase 3 + OCR: PDF 走智能解析（文字层→OCR fallback），其他格式走注册表
     ext = "." + f.filename.rsplit(".", 1)[1].lower()
-    parser = get_parser(ext)
-    if parser:
-        text = parser.extract(data)
-        parser_method = parser.__class__.__name__.replace("Parser", "").lower()
-    else:
-        # fallback: PyMuPDF 硬编码
-        try:
-            text = read_pdf_from_bytes(data, f.filename)
-            parser_method = "pymupdf"
-        except Exception as e:
-            return jsonify({"error": f"文档解析失败: {e}"}), 400
+    try:
+        if ext == ".pdf":
+            text, method = smart_parse_pdf(data, fallback_ocr=True)
+            parser_method = "ocr" if method == "ocr" else method
+        else:
+            parser = get_parser(ext)
+            if not parser:
+                return jsonify({"error": f"不支持的格式: {ext}，支持 {sorted(ALLOWED_EXT)}"}), 400
+            text = parser.extract(data)
+            parser_method = parser.__class__.__name__.replace("Parser", "").lower()
+    except RuntimeError as e:
+        return jsonify({"error": f"文档解析失败: {e}"}), 400
 
     equipment = detect_equipment_name(text, f.filename)
     triples = extract_from_text(text, equipment)

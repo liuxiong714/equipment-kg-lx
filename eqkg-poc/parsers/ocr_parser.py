@@ -1,21 +1,64 @@
 """OCR 解析器 — 扫描件 PDF / 图片。
 
-需要先装:
-  1. Tesseract 本体: winget install Ubi.Integer.TesseractOCR
-  2. Python 绑定: py -3.12 -m pip install pytesseract pillow pymupdf
-  3. 中文语言包: https://github.com/UB-Mannheim/tesseract/wiki 选 chi_sim
+环境要求（已就绪）:
+  1. Tesseract 本体: C:\\Program Files\\Tesseract-OCR\\tesseract.exe (5.4.0)
+  2. Python 绑定: pytesseract + pillow (清华镜像已装)
+  3. 语言包: eqkg-poc/tessdata/ (chi_sim + eng + osd)
 
-用法：当 PdfParser 返回空串时，调用方应该自动 fallback 到 OcrParser。
+用法：当 PdfParser 返回空串时，调用方自动 fallback 到 OcrPdfParser，
+或直接调 smart_parse_pdf(bytes) 一步到位。
 """
 from __future__ import annotations
 
 import io
-import tempfile
+import os
+from pathlib import Path
 
-from parsers.base import BaseParser, register_parser
+from parsers.base import BaseParser, register_parser, logger
 
-# 支持的图片格式
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
+# ===== Tesseract 定位 =====
+_TESSERACT_CANDIDATES = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+]
+
+# 本地 tessdata（chi_sim/eng/osd），与项目同级
+_TESSDATA_DIR = Path(__file__).resolve().parent.parent / "tessdata"
+
+
+def _find_tesseract() -> str | None:
+    """按候选路径找 tesseract.exe，PATH 优先。"""
+    import shutil
+    which = shutil.which("tesseract")
+    if which:
+        return which
+    for p in _TESSERACT_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _configure_pytesseract() -> "tuple[str, str]":
+    """返回 (tesseract_cmd, tessdata_dir)，找不到时抛 RuntimeError。
+
+    同时设置 TESSDATA_PREFIX 环境变量指向本地 tessdata
+    （Tesseract 4/5 语义：直接指向包含 traineddata 的目录），
+    子进程会继承该变量。
+    """
+    cmd = _find_tesseract()
+    if not cmd:
+        raise RuntimeError(
+            "Tesseract 未找到。请安装: winget install UB-Mannheim.TesseractOCR"
+        )
+    import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = cmd
+    os.environ["TESSDATA_PREFIX"] = str(_TESSDATA_DIR)
+    return cmd, str(_TESSDATA_DIR)
+
+
+# OCR 语言配置（中文简体 + 英文）
+_OCR_LANG = "chi_sim+eng"
 
 
 @register_parser(".png")
@@ -34,13 +77,14 @@ class ImageParser(BaseParser):
             import pytesseract
             from PIL import Image
         except ImportError as e:
-            raise RuntimeError(f"OCR 依赖缺失: {e}. 请装 pytesseract + pillow + Tesseract 本体")
+            raise RuntimeError(f"OCR 依赖缺失: {e}. 请: py -3.12 -m pip install pytesseract pillow")
 
+        cmd, tessdata_dir = _configure_pytesseract()
         img = Image.open(io.BytesIO(file_bytes))
-        return pytesseract.image_to_string(img, lang="chi_sim+eng")
+        return pytesseract.image_to_string(img, lang=_OCR_LANG)
 
 
-def _pdf_pages_to_images(pdf_bytes: bytes) -> list[bytes]:
+def _pdf_pages_to_images(pdf_bytes: bytes, max_pages: int = 30, dpi: int = 200) -> list[bytes]:
     """把 PDF 每页渲染成 PNG bytes（OCR 输入）。"""
     try:
         import fitz  # PyMuPDF
@@ -49,11 +93,10 @@ def _pdf_pages_to_images(pdf_bytes: bytes) -> list[bytes]:
     doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
     try:
         results = []
-        for page_num in range(min(doc.page_count, 30)):  # 上限 30 页防止 OCR 卡爆
+        for page_num in range(min(doc.page_count, max_pages)):  # 上限防止 OCR 卡爆
             page = doc[page_num]
-            pix = page.get_pixmap(dpi=200)
-            png = pix.tobytes("png")
-            results.append(png)
+            pix = page.get_pixmap(dpi=dpi)
+            results.append(pix.tobytes("png"))
         return results
     finally:
         doc.close()
@@ -67,6 +110,10 @@ class OcrPdfParser(BaseParser):
 
     supported_ext = ".pdf.ocr"
 
+    def __init__(self, dpi: int = 200, max_pages: int = 30):
+        self.dpi = dpi
+        self.max_pages = max_pages
+
     def extract(self, file_bytes: bytes) -> str:
         try:
             import pytesseract
@@ -74,23 +121,24 @@ class OcrPdfParser(BaseParser):
         except ImportError as e:
             raise RuntimeError(f"OCR 依赖缺失: {e}")
 
-        pages = _pdf_pages_to_images(file_bytes)
+        cmd, tessdata_dir = _configure_pytesseract()
+        pages = _pdf_pages_to_images(file_bytes, max_pages=self.max_pages, dpi=self.dpi)
         if not pages:
             return ""
 
         parts = []
         for i, png in enumerate(pages):
             img = Image.open(io.BytesIO(png))
-            text = pytesseract.image_to_string(img, lang="chi_sim+eng")
+            text = pytesseract.image_to_string(img, lang=_OCR_LANG)
             if text.strip():
-                parts.append(f"=== 第{i+1}页 ===\n{text.strip()}")
-        return "\n\n".join(parts)
+                parts.append(text.strip())
+        return "\n".join(parts)
 
 
 def smart_parse_pdf(file_bytes: bytes, fallback_ocr: bool = True) -> tuple[str, str]:
     """PDF 智能解析：先文字层，空则 OCR。返回 (text, method)。
 
-    method: "text" | "ocr" | "empty"
+    method: "text" | "ocr" | "empty" | "text+ocr_unavailable(...)"
     """
     from parsers.pdf_parser import PdfParser
 
@@ -100,10 +148,10 @@ def smart_parse_pdf(file_bytes: bytes, fallback_ocr: bool = True) -> tuple[str, 
 
     # OCR fallback
     try:
-        ocr = OcrPdfParser()
-        ocr_text = ocr.extract(file_bytes)
+        ocr_text = OcrPdfParser().extract(file_bytes)
         if ocr_text.strip():
             return ocr_text, "ocr"
     except RuntimeError as e:
+        logger.warning(f"[OCR] 不可用: {e}")
         return text, f"text+ocr_unavailable({e})"
     return text, "empty"
