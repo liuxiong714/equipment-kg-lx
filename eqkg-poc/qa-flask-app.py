@@ -166,12 +166,16 @@ HTML = r"""
       <div>
         <select id="filterLabel" onchange="renderTable()" style="padding:6px 10px; border-radius:6px; border:1px solid #dcdfe6;">
           <option value="">全部标签</option>
-          <option value="Equipment">Equipment</option>
-          <option value="Component">Component</option>
-          <option value="Fault">Fault</option>
-          <option value="Function">Function</option>
-          <option value="Attribute">Attribute</option>
-          <option value="Solution">Solution</option>
+          <option value="E01">E01 装备</option>
+          <option value="E02">E02 部件</option>
+          <option value="E03">E03 技术</option>
+          <option value="E04">E04 管理</option>
+          <option value="E07">E07 任务</option>
+          <option value="E09">E09 场所</option>
+          <option value="E11">E11 疾病</option>
+          <option value="E12">E12 药剂</option>
+          <option value="E13">E13 指标</option>
+          <option value="E14">E14 标准</option>
         </select>
       </div>
     </div>
