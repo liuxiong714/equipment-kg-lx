@@ -547,7 +547,7 @@ def merge_triples(driver, triples: list[dict]) -> dict:
 
     Returns: {added_nodes, added_rels, total, skipped}
     """
-    from ontology import ENTITY_TYPES, code_to_neo4j_label
+    # 本文件已定义 code_to_neo4j_label / _all_labels，不需要额外 import
 
     added_nodes = 0
     added_rels = 0

@@ -35,7 +35,7 @@ except ImportError:  # fallback: 裸 dataclass + os.environ
 # 子配置
 # ============================================================
 class Neo4jSettings(_BaseModel if not _HAS_PYDANTIC_V2 else object):
-    uri: str = "bolt://localhost:7687"
+    uri: str = "bolt://127.0.0.1:7687"
     user: str = "neo4j"
     password: str = "eqkg2026"
 
@@ -65,7 +65,7 @@ if _HAS_PYDANTIC_V2:
     from pydantic import BaseModel as _BM, Field as _F
 
     class Neo4jSettings(_BM):
-        uri: str = _F(default="bolt://localhost:7687", alias="NEO4J_URI")
+        uri: str = _F(default="bolt://127.0.0.1:7687", alias="NEO4J_URI")
         user: str = _F(default="neo4j", alias="NEO4J_USER")
         password: str = _F(default="eqkg2026", alias="NEO4J_PASSWORD")
 
@@ -102,7 +102,7 @@ else:
 
         def __init__(self):
             self.neo4j = Neo4jSettings(
-                uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+                uri=os.environ.get("NEO4J_URI", "bolt://127.0.0.1:7687"),
                 user=os.environ.get("NEO4J_USER", "neo4j"),
                 password=os.environ.get("NEO4J_PASSWORD", "eqkg2026"),
             )
